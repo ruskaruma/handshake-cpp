@@ -2,7 +2,6 @@
 #include <netinet/in.h>
 #include <sys/socket.h>
 #include <unistd.h>
-
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -10,15 +9,12 @@
 #include <string>
 #include <vector>
 #include <optional>
-
 #include "ws/http.hpp"
 #include "ws/sha1.hpp"
 #include "ws/base64.hpp"
-
 namespace ws
 {
     static const char* WS_GUID="258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
-
     static bool _is_valid_upgrade(const HttpRequest& r)
     {
         if(_lc(r.method)!="get") return false;
@@ -35,7 +31,6 @@ namespace ws
         if(ky==r.headers.end()) return false;
         return true;
     }
-
     static std::optional<std::string> _accept_val(const HttpRequest& r)
     {
         auto it=r.headers.find("sec-websocket-key");
@@ -45,7 +40,6 @@ namespace ws
         auto dig=sha1_bytes(src);
         return base64_encode(dig.data(),dig.size());
     }
-
     static std::string _resp101(const std::string& acc)
     {
         std::string out;
@@ -58,7 +52,6 @@ namespace ws
         return out;
     }
 }
-
 int main(int argc,char** argv)
 {
     int port=8080;
@@ -73,9 +66,7 @@ int main(int argc,char** argv)
     sockaddr_in a{}; a.sin_family=AF_INET; a.sin_addr.s_addr=htonl(INADDR_ANY); a.sin_port=htons(port);
     if(bind(lfd,(sockaddr*)&a,sizeof(a))<0){ perror("bind"); return 1; }
     if(listen(lfd,16)<0){ perror("listen"); return 1; }
-
     std::cout<<"listening on 0.0.0.0:"<<port<<"\n";
-
     for(;;)
     {
         sockaddr_in cli{}; socklen_t cl=sizeof(cli);
@@ -84,8 +75,6 @@ int main(int argc,char** argv)
 
         std::string rbuf; rbuf.reserve(4096);
         char tmp[2048];
-
-        // read until \r\n\r\n
         while(rbuf.find("\r\n\r\n")==std::string::npos)
         {
             ssize_t n=recv(fd,tmp,sizeof(tmp),0);
@@ -93,7 +82,6 @@ int main(int argc,char** argv)
             rbuf.append(tmp,tmp+n);
             if(rbuf.size()>32*1024){ std::cerr<<"headers too large\n"; close(fd); goto next; }
         }
-
         auto req=ws::parse_http_request(rbuf);
         if(!req || !ws::_is_valid_upgrade(*req))
         {
@@ -102,7 +90,6 @@ int main(int argc,char** argv)
             close(fd);
             goto next;
         }
-
         auto acc=ws::_accept_val(*req);
         if(!acc)
         {
@@ -111,7 +98,6 @@ int main(int argc,char** argv)
             close(fd);
             goto next;
         }
-
         {
             auto resp=ws::_resp101(*acc);
             if(send(fd,resp.data(),resp.size(),0)<0)
@@ -120,11 +106,9 @@ int main(int argc,char** argv)
                  goto next;
             }
         }
-        std::cout<<"handshake complete; connection upgraded\n";
-
+        std::cout<<"handshake complete and successful; connection upgraded\n";
         sleep(5);
         close(fd);
-
     next:
         ;
     }
