@@ -1,9 +1,9 @@
 #pragma once
-#include<cstdint>
-#include<cstddef>
-#include<array>
-#include<vector>
-#include<string>
+#include <cstdint>
+#include <cstddef>
+#include <array>
+#include <vector>
+#include <string>
 
 namespace webserver
 {
@@ -27,7 +27,11 @@ namespace webserver
             for(size_t off=0;off<t.size();off+=64) _block(&t[off]);
 
             std::array<uint8_t,20> out{};
-            _put32(out,0,h0_); _put32(out,4,h1_); _put32(out,8,h2_); _put32(out,12,h3_); _put32(out,16,h4_);
+            _put32(out,0,h0_);
+            _put32(out,4,h1_);
+            _put32(out,8,h2_);
+            _put32(out,12,h3_);
+            _put32(out,16,h4_);
             return out;
         }
     private:
@@ -48,7 +52,11 @@ namespace webserver
             uint32_t w[80];
             for(int i=0;i<16;++i)
                 w[i]=(uint32_t(b[i*4+0])<<24)|(uint32_t(b[i*4+1])<<16)|(uint32_t(b[i*4+2])<<8)|(uint32_t(b[i*4+3]));
-            for(int i=16;i<80;++i){ uint32_t v=w[i-3]^w[i-8]^w[i-14]^w[i-16]; w[i]=(v<<1)|(v>>31); }
+            for(int i=16;i<80;++i)
+            {
+                uint32_t v=w[i-3]^w[i-8]^w[i-14]^w[i-16];
+                w[i]=(v<<1)|(v>>31);
+            }
 
             uint32_t a=h0_,bv=h1_,c=h2_,d=h3_,e=h4_;
             for(int i=0;i<80;++i)
