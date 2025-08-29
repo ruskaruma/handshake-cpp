@@ -7,9 +7,9 @@
 #include <cstdlib>
 #include <cstring>
 #include <iostream>
+#include <optional>
 #include <string>
 #include <vector>
-#include <optional>
 
 #include "webserver/http.hpp"
 #include "webserver/sha1.hpp"
@@ -57,6 +57,49 @@ namespace webserver
         out += "\r\n";
         return out;
     }
+
+    // handle one client; return on any error (no gotos)
+    static void handle_client(int fd)
+    {
+        std::string rbuf; rbuf.reserve(4096);
+        char tmp[2048];
+
+        // read until CRLFCRLF
+        while (rbuf.find("\r\n\r\n") == std::string::npos)
+        {
+            ssize_t n = ::recv(fd, tmp, sizeof(tmp), 0);
+            if (n <= 0) { if (n < 0) perror("recv"); ::close(fd); return; }
+            rbuf.append(tmp, tmp + n);
+            if (rbuf.size() > 32 * 1024) { std::cerr << "headers too large\n"; ::close(fd); return; }
+        }
+
+        auto req = parse_http_request(rbuf);
+        if (!req || !_is_valid_upgrade(*req))
+        {
+            static const char* bad = "HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\n\r\n";
+            ::send(fd, bad, std::strlen(bad), 0);
+            ::close(fd);
+            return;
+        }
+
+        auto acc = _accept_val(*req);
+        if (!acc)
+        {
+            static const char* bad = "HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\n\r\n";
+            ::send(fd, bad, std::strlen(bad), 0);
+            ::close(fd);
+            return;
+        }
+
+        auto resp = _resp101(*acc);
+        if (::send(fd, resp.data(), resp.size(), 0) < 0) { perror("send"); ::close(fd); return; }
+
+        std::cout << "handshake complete; connection upgraded\n";
+
+        // Day 1 ends here (no frames yet)
+        ::sleep(5);
+        ::close(fd);
+    }
 }
 
 int main(int argc, char** argv)
@@ -68,69 +111,28 @@ int main(int argc, char** argv)
     if (lfd < 0) { perror("socket"); return 1; }
 
     int yes = 1;
-    setsockopt(lfd, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(yes));
+    ::setsockopt(lfd, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(yes));
 
     sockaddr_in a{};
     a.sin_family = AF_INET;
     a.sin_addr.s_addr = htonl(INADDR_ANY);
     a.sin_port = htons(port);
 
-    if (bind(lfd, (sockaddr*)&a, sizeof(a)) < 0) { perror("bind"); return 1; }
-    if (listen(lfd, 16) < 0) { perror("listen"); return 1; }
+    if (::bind(lfd, (sockaddr*)&a, sizeof(a)) < 0) { perror("bind"); return 1; }
+    if (::listen(lfd, 16) < 0) { perror("listen"); return 1; }
 
     std::cout << "listening on 0.0.0.0:" << port << "\n";
 
     for (;;)
     {
         sockaddr_in cli{}; socklen_t cl = sizeof(cli);
-        int fd = accept(lfd, (sockaddr*)&cli, &cl);
+        int fd = ::accept(lfd, (sockaddr*)&cli, &cl);
         if (fd < 0) { perror("accept"); continue; }
 
-        std::string rbuf; rbuf.reserve(4096);
-        char tmp[2048];
-
-        // read until \r\n\r\n
-        while (rbuf.find("\r\n\r\n") == std::string::npos)
-        {
-            ssize_t n = recv(fd, tmp, sizeof(tmp), 0);
-            if (n <= 0) { if (n < 0) perror("recv"); close(fd); goto next; }
-            rbuf.append(tmp, tmp + n);
-            if (rbuf.size() > 32 * 1024) { std::cerr << "headers too large\n"; close(fd); goto next; }
-        }
-
-        auto req = webserver::parse_http_request(rbuf);
-        if (!req || !webserver::_is_valid_upgrade(*req))
-        {
-            static const char* bad = "HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\n\r\n";
-            send(fd, bad, std::strlen(bad), 0);
-            close(fd);
-            goto next;
-        }
-
-        auto acc = webserver::_accept_val(*req);
-        if (!acc)
-        {
-            static const char* bad = "HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\n\r\n";
-            send(fd, bad, std::strlen(bad), 0);
-            close(fd);
-            goto next;
-        }
-
-        {
-            auto resp = webserver::_resp101(*acc);
-            if (send(fd, resp.data(), resp.size(), 0) < 0) { perror("send"); close(fd); goto next; }
-        }
-
-        std::cout << "handshake complete; connection upgraded\n";
-
-        // Day 1: no frame handling yet
-        sleep(5);
-        close(fd);
-
-    next:
-        ;
+        webserver::handle_client(fd);
+        // loop back to accept the next client
     }
 
-    close(lfd);
+    ::close(lfd);
     return 0;
 }
