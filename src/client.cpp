@@ -8,11 +8,9 @@
 #include<iostream>
 #include<string>
 #include<vector>
-
 #include "webserver/frame.hpp"
 #include "webserver/base64.hpp"
 #include "webserver/sha1.hpp"
-
 static std::string make_key()
 {
     return "dGhlIHNhbXBsZSBub25jZQ==";
@@ -73,14 +71,38 @@ int main(int argc,char** argv)
         size_t used=0;
         if(webserver::parse_frame(rbuf,n,in,used))
         {
-            std::string msg(in.payload.begin(),in.payload.end());
-            std::cout<<"got back: "<<msg<<"\n";
+            if(in.opcode==0x1)
+            {
+                std::string msg(in.payload.begin(),in.payload.end());
+                std::cout<<"got back: "<<msg<<"\n";
+            }
         }
     }
-    webserver::Frame closef{true,0x8,std::vector<uint8_t>()};
-    auto outc=webserver::build_frame(closef);
+    //sending ping
+    webserver::Frame ping{true,0x9,std::vector<uint8_t>{'p','i','n','g'}};
+    auto outp=webserver::build_frame(ping);
+    ::send(fd,outp.data(),outp.size(),0);
+    std::cout<<"sent ping frame\n";
+
+    //pong receive(receiving)
+    n=::recv(fd,rbuf,sizeof(rbuf),0);
+    if(n>0)
+    {
+        webserver::Frame pong;
+        size_t usedp=0;
+        if(webserver::parse_frame(rbuf,n,pong,usedp))
+        {
+            if(pong.opcode==0xA)
+            {
+                std::string msg(pong.payload.begin(),pong.payload.end());
+                std::cout<<"got pong: "<<msg<<"\n";
+            }
+        }
+    }
+    auto outc=webserver::build_close(1000,"normal closure");
     ::send(fd,outc.data(),outc.size(),0);
     std::cout<<"sent close frame\n";
+
     ::close(fd);
     return 0;
 }

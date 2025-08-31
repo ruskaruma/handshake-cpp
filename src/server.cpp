@@ -9,12 +9,10 @@
 #include<optional>
 #include<string>
 #include<vector>
-
 #include "webserver/http.hpp"
 #include "webserver/sha1.hpp"
 #include "webserver/base64.hpp"
 #include "webserver/frame.hpp"
-
 namespace webserver
 {
     static const char* WS_GUID="258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
@@ -41,7 +39,6 @@ namespace webserver
         return false;
         return true;
     }
-
     static std::optional<std::string> _accept_val(const HttpRequest& r)
     {
         auto it=r.headers.find("sec-websocket-key");
@@ -52,7 +49,6 @@ namespace webserver
         auto dig=sha1_bytes(src);
         return base64_encode(dig.data(),dig.size());
     }
-
     static std::string _resp101(const std::string& acc)
     {
         std::string out;
@@ -64,12 +60,10 @@ namespace webserver
         out+="\r\n";
         return out;
     }
-
     static void handle_client(int fd)
     {
         std::string rbuf; rbuf.reserve(4096);
         char tmp[2048];
-
         while(rbuf.find("\r\n\r\n")==std::string::npos)
         {
             ssize_t n=::recv(fd,tmp,sizeof(tmp),0);
@@ -87,7 +81,6 @@ namespace webserver
                 return;
             }
         }
-
         auto req=parse_http_request(rbuf);
         if(!req || !_is_valid_upgrade(*req))
         {
@@ -96,7 +89,6 @@ namespace webserver
             ::close(fd);
             return;
         }
-
         auto acc=_accept_val(*req);
         if(!acc)
         {
@@ -105,7 +97,6 @@ namespace webserver
             ::close(fd);
             return;
         }
-
         auto resp=_resp101(*acc);
         if(::send(fd,resp.data(),resp.size(),0)<0)
         {
@@ -113,10 +104,7 @@ namespace webserver
             ::close(fd);
             return;
         }
-
         std::cout<<"handshake complete; connection upgraded\n";
-
-        // frame loop (Day 2)
         for(;;)
         {
             uint8_t buf[4096];
@@ -127,7 +115,6 @@ namespace webserver
                 ::close(fd);
                 return;
             }
-
             Frame f;
             size_t used=0;
             if(!parse_frame(buf,n,f,used))
@@ -136,45 +123,47 @@ namespace webserver
                 ::close(fd);
                 return;
             }
-
             if(f.opcode==0x1) // text
             {
                 std::string msg(f.payload.begin(),f.payload.end());
                 std::cout<<"got: "<<msg<<"\n";
-
                 Frame reply{true,0x1,std::vector<uint8_t>(msg.begin(),msg.end())};
                 auto out=build_frame(reply);
                 ::send(fd,out.data(),out.size(),0);
             }
+            else if(f.opcode==0x9) // ping
+            {
+                auto out=build_pong(f);
+                ::send(fd,out.data(),out.size(),0);
+                std::cout<<"ping received, pong sent\n";
+            }
             else if(f.opcode==0x8) // close
             {
+                auto out=build_close(1000,"normal closure");
+                ::send(fd,out.data(),out.size(),0);
                 ::close(fd);
+                std::cout<<"connection closed\n";
                 return;
             }
         }
     }
 }
-
 int main(int argc,char** argv)
 {
     int port=8080;
     if(argc>=2) port=std::atoi(argv[1]);
-
     int lfd=::socket(AF_INET,SOCK_STREAM,0);
     if(lfd<0)
     {
         perror("socket");
         return 1;
     }
-
     int yes=1;
     ::setsockopt(lfd,SOL_SOCKET,SO_REUSEADDR,&yes,sizeof(yes));
-
     sockaddr_in a{};
     a.sin_family=AF_INET;
     a.sin_addr.s_addr=htonl(INADDR_ANY);
     a.sin_port=htons(port);
-
     if(::bind(lfd,(sockaddr*)&a,sizeof(a))<0)
     {
         perror("bind");
@@ -185,9 +174,7 @@ int main(int argc,char** argv)
         perror("listen");
         return 1;
     }
-
     std::cout<<"listening on 0.0.0.0:"<<port<<"\n";
-
     for(;;)
     {
         sockaddr_in cli{};
@@ -200,7 +187,6 @@ int main(int argc,char** argv)
         }
         webserver::handle_client(fd);
     }
-
     ::close(lfd);
     return 0;
 }

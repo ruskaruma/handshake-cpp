@@ -3,7 +3,6 @@
 #include <cstddef>
 #include <vector>
 #include <string>
-
 namespace webserver
 {
     struct Frame
@@ -12,7 +11,6 @@ namespace webserver
         uint8_t opcode;
         std::vector<uint8_t>payload;
     };
-
     inline bool parse_frame(const uint8_t* buf, size_t n, Frame& out, size_t& used)
     {
         if(n<2) return false;
@@ -43,9 +41,8 @@ namespace webserver
             for(int i=0;i<4;i++) mask[i]=buf[pos+i];
             pos+=4;
         }
-
-        if(n<pos+len) return false;
-
+        if(n<pos+len)
+        return false;
         out.payload.resize(len);
         for(size_t i=0;i<len;i++)
         {
@@ -57,13 +54,11 @@ namespace webserver
         used=pos;
         return true;
     }
-
     inline std::vector<uint8_t> build_frame(const Frame& f)
     {
         std::vector<uint8_t> out;
         uint8_t b0=(f.fin?0x80:0x00)|(f.opcode&0x0F);
         out.push_back(b0);
-
         size_t len=f.payload.size();
         if(len<126)
         {
@@ -83,5 +78,19 @@ namespace webserver
         }
         out.insert(out.end(), f.payload.begin(), f.payload.end());
         return out;
+    }
+    inline std::vector<uint8_t> build_pong(const Frame& ping)
+    {
+        Frame f{true,0xA,ping.payload}; //pong
+        return build_frame(f);
+    }
+    inline std::vector<uint8_t> build_close(uint16_t code=1000,const std::string& reason="")
+    {
+        std::vector<uint8_t>payload;
+        payload.push_back((code>>8)&0xFF);
+        payload.push_back(code&0xFF);
+        payload.insert(payload.end(),reason.begin(),reason.end());
+        Frame f{true,0x8,payload};
+        return build_frame(f);
     }
 }
