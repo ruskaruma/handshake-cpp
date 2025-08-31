@@ -1,6 +1,7 @@
 #include<arpa/inet.h>
 #include<netinet/in.h>
 #include<sys/socket.h>
+#include<sys/select.h>
 #include<unistd.h>
 #include<cstdio>
 #include<cstdlib>
@@ -9,6 +10,7 @@
 #include<optional>
 #include<string>
 #include<vector>
+#include<map>
 #include "webserver/http.hpp"
 #include "webserver/sha1.hpp"
 #include "webserver/base64.hpp"
@@ -16,19 +18,16 @@
 namespace webserver
 {
     static const char* WS_GUID="258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
-
     static bool _is_valid_upgrade(const HttpRequest& r)
     {
         if(_lc(r.method)!="get")
         return false;
         if(_lc(r.version)!="http/1.1")
         return false;
-
         auto up=r.headers.find("upgrade");
         auto co=r.headers.find("connection");
         auto ve=r.headers.find("sec-websocket-version");
         auto ky=r.headers.find("sec-websocket-key");
-
         if(up==r.headers.end() || !_token_has(up->second,"websocket"))
         return false;
         if(co==r.headers.end() || !_token_has(co->second,"upgrade"))
@@ -60,7 +59,7 @@ namespace webserver
         out+="\r\n";
         return out;
     }
-    static void handle_client(int fd)
+    static bool perform_handshake(int fd)
     {
         std::string rbuf; rbuf.reserve(4096);
         char tmp[2048];
@@ -69,89 +68,82 @@ namespace webserver
             ssize_t n=::recv(fd,tmp,sizeof(tmp),0);
             if(n<=0)
             {
-                if(n<0) perror("recv");
-                ::close(fd);
-                return;
+                return false;
             }
             rbuf.append(tmp,tmp+n);
             if(rbuf.size()>32*1024)
             {
-                std::cerr<<"headers too large\n";
-                ::close(fd);
-                return;
+                return false;
             }
         }
+
         auto req=parse_http_request(rbuf);
         if(!req || !_is_valid_upgrade(*req))
         {
             static const char* bad="HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\n\r\n";
             ::send(fd,bad,std::strlen(bad),0);
-            ::close(fd);
-            return;
+            return false;
         }
         auto acc=_accept_val(*req);
         if(!acc)
         {
             static const char* bad="HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\n\r\n";
             ::send(fd,bad,std::strlen(bad),0);
-            ::close(fd);
-            return;
+            return false;
         }
         auto resp=_resp101(*acc);
         if(::send(fd,resp.data(),resp.size(),0)<0)
         {
-            perror("send");
-            ::close(fd);
-            return;
+            return false;
         }
-        std::cout<<"handshake complete; connection upgraded\n";
-        for(;;)
+        std::cout<<"handshake complete; connection upgraded (fd="<<fd<<")\n";
+        return true;
+    }
+    static bool handle_frame(int fd)
+    {
+        uint8_t buf[4096];
+        ssize_t n=::recv(fd,buf,sizeof(buf),0);
+        if(n<=0)
         {
-            uint8_t buf[4096];
-            ssize_t n=::recv(fd,buf,sizeof(buf),0);
-            if(n<=0)
-            {
-                if(n<0) perror("recv");
-                ::close(fd);
-                return;
-            }
-            Frame f;
-            size_t used=0;
-            if(!parse_frame(buf,n,f,used))
-            {
-                std::cerr<<"frame parse failed\n";
-                ::close(fd);
-                return;
-            }
-            if(f.opcode==0x1) // text
-            {
-                std::string msg(f.payload.begin(),f.payload.end());
-                std::cout<<"got: "<<msg<<"\n";
-                Frame reply{true,0x1,std::vector<uint8_t>(msg.begin(),msg.end())};
-                auto out=build_frame(reply);
-                ::send(fd,out.data(),out.size(),0);
-            }
-            else if(f.opcode==0x9) // ping
-            {
-                auto out=build_pong(f);
-                ::send(fd,out.data(),out.size(),0);
-                std::cout<<"ping received, pong sent\n";
-            }
-            else if(f.opcode==0x8) // close
-            {
-                auto out=build_close(1000,"normal closure");
-                ::send(fd,out.data(),out.size(),0);
-                ::close(fd);
-                std::cout<<"connection closed\n";
-                return;
-            }
+            return false; //if closed or error
         }
+        Frame f;
+        size_t used=0;
+        if(!parse_frame(buf,n,f,used))
+        {
+            std::cerr<<"frame parse failed\n";
+            return false;
+        }
+        if(f.opcode==0x1) 
+        {
+            std::string msg(f.payload.begin(),f.payload.end());
+            std::cout<<"fd "<<fd<<" said: "<<msg<<"\n";
+
+            Frame reply{true,0x1,std::vector<uint8_t>(msg.begin(),msg.end())};
+            auto out=build_frame(reply);
+            ::send(fd,out.data(),out.size(),0);
+        }
+        else if(f.opcode==0x9) 
+        {
+            auto out=build_pong(f);
+            ::send(fd,out.data(),out.size(),0);
+            std::cout<<"ping received from fd "<<fd<<", pong sent\n";
+        }
+        else if(f.opcode==0x8) 
+        {
+            auto out=build_close(1000,"normal closure");
+            ::send(fd,out.data(),out.size(),0);
+            std::cout<<"connection closed (fd="<<fd<<")\n";
+            return false;
+        }
+        return true;
     }
 }
 int main(int argc,char** argv)
 {
     int port=8080;
     if(argc>=2) port=std::atoi(argv[1]);
+
     int lfd=::socket(AF_INET,SOCK_STREAM,0);
     if(lfd<0)
     {
@@ -175,17 +167,65 @@ int main(int argc,char** argv)
         return 1;
     }
     std::cout<<"listening on 0.0.0.0:"<<port<<"\n";
+    fd_set master,readfds;
+    FD_ZERO(&master);
+    FD_SET(lfd,&master);
+    int fdmax=lfd;
+    std::map<int,bool> handshaken; // track which fds finished handshake
     for(;;)
     {
-        sockaddr_in cli{};
-        socklen_t cl=sizeof(cli);
-        int fd=::accept(lfd,(sockaddr*)&cli,&cl);
-        if(fd<0)
+        readfds=master;
+        if(::select(fdmax+1,&readfds,nullptr,nullptr,nullptr)<0)
         {
-            perror("accept");
-            continue;
+            perror("select");
+            break;
         }
-        webserver::handle_client(fd);
+        for(int fd=0;fd<=fdmax;fd++)
+        {
+            if(FD_ISSET(fd,&readfds))
+            {
+                if(fd==lfd)
+                {
+                    // new connection
+                    sockaddr_in cli{};
+                    socklen_t cl=sizeof(cli);
+                    int cfd=::accept(lfd,(sockaddr*)&cli,&cl);
+                    if(cfd<0)
+                    {
+                        perror("accept");
+                        continue;
+                    }
+                    FD_SET(cfd,&master);
+                    if(cfd>fdmax) fdmax=cfd;
+                    handshaken[cfd]=false;
+                }
+                else
+                {
+                    if(!handshaken[fd])
+                    {
+                        if(!webserver::perform_handshake(fd))
+                        {
+                            ::close(fd);
+                            FD_CLR(fd,&master);
+                            handshaken.erase(fd);
+                        }
+                        else
+                        {
+                            handshaken[fd]=true;
+                        }
+                    }
+                    else
+                    {
+                        if(!webserver::handle_frame(fd))
+                        {
+                            ::close(fd);
+                            FD_CLR(fd,&master);
+                            handshaken.erase(fd);
+                        }
+                    }
+                }
+            }
+        }
     }
     ::close(lfd);
     return 0;
