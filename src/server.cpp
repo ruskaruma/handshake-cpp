@@ -24,10 +24,12 @@ namespace webserver
         return false;
         if(_lc(r.version)!="http/1.1")
         return false;
+
         auto up=r.headers.find("upgrade");
         auto co=r.headers.find("connection");
         auto ve=r.headers.find("sec-websocket-version");
         auto ky=r.headers.find("sec-websocket-key");
+
         if(up==r.headers.end() || !_token_has(up->second,"websocket"))
         return false;
         if(co==r.headers.end() || !_token_has(co->second,"upgrade"))
@@ -63,6 +65,7 @@ namespace webserver
     {
         std::string rbuf; rbuf.reserve(4096);
         char tmp[2048];
+
         while(rbuf.find("\r\n\r\n")==std::string::npos)
         {
             ssize_t n=::recv(fd,tmp,sizeof(tmp),0);
@@ -76,7 +79,6 @@ namespace webserver
                 return false;
             }
         }
-
         auto req=parse_http_request(rbuf);
         if(!req || !_is_valid_upgrade(*req))
         {
@@ -99,42 +101,95 @@ namespace webserver
         std::cout<<"handshake complete; connection upgraded (fd="<<fd<<")\n";
         return true;
     }
+    static std::map<int,std::vector<uint8_t>> frag_buffer;
+    static std::map<int,uint8_t> frag_opcode;
     static bool handle_frame(int fd)
     {
         uint8_t buf[4096];
         ssize_t n=::recv(fd,buf,sizeof(buf),0);
         if(n<=0)
         {
-            return false; //if closed or error
+            return false;
         }
         Frame f;
         size_t used=0;
         if(!parse_frame(buf,n,f,used))
         {
             std::cerr<<"frame parse failed\n";
+            auto out=build_close(1002,"protocol error");
+            ::send(fd,out.data(),out.size(),0);
             return false;
         }
-        if(f.opcode==0x1) 
+        if(f.opcode==OP_TEXT)
         {
             std::string msg(f.payload.begin(),f.payload.end());
-            std::cout<<"fd "<<fd<<" said: "<<msg<<"\n";
+            std::cout<<"fd "<<fd<<" said (text): "<<msg<<"\n";
 
-            Frame reply{true,0x1,std::vector<uint8_t>(msg.begin(),msg.end())};
+            Frame reply{true,OP_TEXT,std::vector<uint8_t>(msg.begin(),msg.end())};
             auto out=build_frame(reply);
             ::send(fd,out.data(),out.size(),0);
         }
-        else if(f.opcode==0x9) 
+        else if(f.opcode==OP_BINARY)
+        {
+            std::cout<<"fd "<<fd<<" sent binary of "<<f.payload.size()<<" bytes\n";
+
+            Frame reply{true,OP_BINARY,f.payload};
+            auto out=build_frame(reply);
+            ::send(fd,out.data(),out.size(),0);
+        }
+        else if(f.opcode==OP_CONT)
+        {
+            // continuation frame for fragmented message
+            auto& buf=frag_buffer[fd];
+            buf.insert(buf.end(),f.payload.begin(),f.payload.end());
+
+            if(f.fin)
+            {
+                uint8_t baseop=frag_opcode[fd];
+                if(baseop==OP_TEXT)
+                {
+                    std::string msg(buf.begin(),buf.end());
+                    std::cout<<"fd "<<fd<<" (fragmented text): "<<msg<<"\n";
+                    Frame reply{true,OP_TEXT,std::vector<uint8_t>(msg.begin(),msg.end())};
+                    auto out=build_frame(reply);
+                    ::send(fd,out.data(),out.size(),0);
+                }
+                else if(baseop==OP_BINARY)
+                {
+                    std::cout<<"fd "<<fd<<" (fragmented binary, "<<buf.size()<<" bytes)\n";
+                    Frame reply{true,OP_BINARY,buf};
+                    auto out=build_frame(reply);
+                    ::send(fd,out.data(),out.size(),0);
+                }
+                buf.clear();
+                frag_opcode.erase(fd);
+            }
+        }
+        else if(f.opcode==OP_PING)
         {
             auto out=build_pong(f);
             ::send(fd,out.data(),out.size(),0);
             std::cout<<"ping received from fd "<<fd<<", pong sent\n";
         }
-        else if(f.opcode==0x8) 
+        else if(f.opcode==OP_CLOSE)
         {
             auto out=build_close(1000,"normal closure");
             ::send(fd,out.data(),out.size(),0);
-            std::cout<<"connection closed (fd="<<fd<<")\n";
+            std::cout<<"close frame received, echoed close (fd="<<fd<<")\n";
             return false;
+        }
+        else
+        {
+            std::cerr<<"unknown opcode "<<int(f.opcode)<<" from fd "<<fd<<"\n";
+            auto out=build_close(1002,"protocol error");
+            ::send(fd,out.data(),out.size(),0);
+            return false;
+        }
+        //here we store initial fragment if needed
+        if(!f.fin && (f.opcode==OP_TEXT || f.opcode==OP_BINARY))
+        {
+            frag_buffer[fd]=f.payload;
+            frag_opcode[fd]=f.opcode;
         }
         return true;
     }
@@ -143,7 +198,6 @@ int main(int argc,char** argv)
 {
     int port=8080;
     if(argc>=2) port=std::atoi(argv[1]);
-
     int lfd=::socket(AF_INET,SOCK_STREAM,0);
     if(lfd<0)
     {
@@ -171,7 +225,7 @@ int main(int argc,char** argv)
     FD_ZERO(&master);
     FD_SET(lfd,&master);
     int fdmax=lfd;
-    std::map<int,bool> handshaken; // track which fds finished handshake
+    std::map<int,bool> handshaken;
     for(;;)
     {
         readfds=master;
@@ -186,7 +240,6 @@ int main(int argc,char** argv)
             {
                 if(fd==lfd)
                 {
-                    // new connection
                     sockaddr_in cli{};
                     socklen_t cl=sizeof(cli);
                     int cfd=::accept(lfd,(sockaddr*)&cli,&cl);
@@ -221,6 +274,8 @@ int main(int argc,char** argv)
                             ::close(fd);
                             FD_CLR(fd,&master);
                             handshaken.erase(fd);
+                            webserver::frag_buffer.erase(fd);
+                            webserver::frag_opcode.erase(fd);
                         }
                     }
                 }
