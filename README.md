@@ -75,3 +75,9 @@ The client connects and tests various features:
 ## Implementation Notes
 
 Uses `select()` for handling multiple client connections. Basic implementation focused on understanding the protocol rather than performance or production use.
+
+## License
+
+This project is licensed under the MIT License.
+
+---
