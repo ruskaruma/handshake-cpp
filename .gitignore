@@ -78,3 +78,26 @@ Desktop.ini
 *.user
 *.workspace
 
+# Build artifacts
+/build/
+/CMakeFiles/
+/CMakeCache.txt
+/Makefile
+/cmake_install.cmake
+
+# Binaries
+/server
+/client
+
+# IDE/editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*.user
+
+# OS-specific
+.DS_Store
+Thumbs.db
+
+---
