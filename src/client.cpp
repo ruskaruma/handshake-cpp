@@ -15,7 +15,6 @@ static std::string make_key()
 {
     return "dGhlIHNhbXBsZSBub25jZQ==";
 }
-
 int main(int argc,char** argv)
 {
     const char* host="127.0.0.1";
@@ -60,9 +59,11 @@ int main(int argc,char** argv)
     }
     buf[n]=0;
     std::cout<<"handshake response:\n"<<buf<<"\n";
-    webserver::Frame f{true,0x1,std::vector<uint8_t>{'h','e','l','l','o'}};
-    auto out=webserver::build_frame(f);
-    ::send(fd,out.data(),out.size(),0);
+
+    //send text frame from here
+    webserver::Frame ftext{true,webserver::OP_TEXT,std::vector<uint8_t>{'h','e','l','l','o'}};
+    auto outt=webserver::build_frame(ftext);
+    ::send(fd,outt.data(),outt.size(),0);
     uint8_t rbuf[4096];
     n=::recv(fd,rbuf,sizeof(rbuf),0);
     if(n>0)
@@ -71,20 +72,57 @@ int main(int argc,char** argv)
         size_t used=0;
         if(webserver::parse_frame(rbuf,n,in,used))
         {
-            if(in.opcode==0x1)
+            if(in.opcode==webserver::OP_TEXT)
             {
                 std::string msg(in.payload.begin(),in.payload.end());
-                std::cout<<"got back: "<<msg<<"\n";
+                std::cout<<"got back text: "<<msg<<"\n";
             }
         }
     }
-    //sending ping
-    webserver::Frame ping{true,0x9,std::vector<uint8_t>{'p','i','n','g'}};
+
+    //send binary frame
+    std::vector<uint8_t> bdata={0x01,0x02,0x03,0x04};
+    auto outb=webserver::build_binary(bdata);
+    ::send(fd,outb.data(),outb.size(),0);
+    n=::recv(fd,rbuf,sizeof(rbuf),0);
+    if(n>0)
+    {
+        webserver::Frame inb;
+        size_t usedb=0;
+        if(webserver::parse_frame(rbuf,n,inb,usedb))
+        {
+            if(inb.opcode==webserver::OP_BINARY)
+            {
+                std::cout<<"got back binary of size "<<inb.payload.size()<<"\n";
+            }
+        }
+    }
+    //send fragmented text message here
+    std::string longmsg="this is fragmented";
+    std::vector<uint8_t> part1(longmsg.begin(),longmsg.begin()+7);  
+    std::vector<uint8_t> part2(longmsg.begin()+7,longmsg.end());
+    auto frag1=webserver::build_text(std::string(part1.begin(),part1.end()),false); 
+    auto frag2=webserver::build_continuation(part2,true);
+    ::send(fd,frag1.data(),frag1.size(),0);
+    ::send(fd,frag2.data(),frag2.size(),0);
+    n=::recv(fd,rbuf,sizeof(rbuf),0);
+    if(n>0)
+    {
+        webserver::Frame inf;
+        size_t usedf=0;
+        if(webserver::parse_frame(rbuf,n,inf,usedf))
+        {
+            if(inf.opcode==webserver::OP_TEXT)
+            {
+                std::string msg(inf.payload.begin(),inf.payload.end());
+                std::cout<<"got back fragmented text: "<<msg<<"\n";
+            }
+        }
+    }
+    webserver::Frame ping{true,webserver::OP_PING,std::vector<uint8_t>{'p','i','n','g'}};
     auto outp=webserver::build_frame(ping);
     ::send(fd,outp.data(),outp.size(),0);
     std::cout<<"sent ping frame\n";
-
-    //pong receive(receiving)
     n=::recv(fd,rbuf,sizeof(rbuf),0);
     if(n>0)
     {
@@ -92,7 +130,7 @@ int main(int argc,char** argv)
         size_t usedp=0;
         if(webserver::parse_frame(rbuf,n,pong,usedp))
         {
-            if(pong.opcode==0xA)
+            if(pong.opcode==webserver::OP_PONG)
             {
                 std::string msg(pong.payload.begin(),pong.payload.end());
                 std::cout<<"got pong: "<<msg<<"\n";
