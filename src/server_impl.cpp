@@ -5,23 +5,36 @@
 #include "webserver/frame.hpp"
 #include "webserver/log.hpp"
 
-#include<arpa/inet.h>
-#include<netinet/in.h>
-#include<sys/socket.h>
-#include<sys/select.h>
-#include<unistd.h>
-#include<iostream>
-#include<cstring>
+#include <arpa/inet.h>
+#include <netinet/in.h>
+#include <sys/socket.h>
+#include <sys/select.h>
+#include <unistd.h>
+
+#include <iostream>
+#include <cstring>
+#include <atomic>
 
 namespace webserver
 {
     static const char* WS_GUID="258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
 
-    WebSocketServer::WebSocketServer(int port):port_(port),lfd_(-1),fdmax_(-1)
+    WebSocketServer::WebSocketServer(int port):port_(port),lfd_(-1),fdmax_(-1),backlog_(16),max_payload_(65536)
     {
         FD_ZERO(&master_);
     }
-    void WebSocketServer::run()
+
+    void WebSocketServer::set_backlog(int backlog)
+    {
+        backlog_=backlog;
+    }
+
+    void WebSocketServer::set_max_payload(int bytes)
+    {
+        max_payload_=bytes;
+    }
+
+    void WebSocketServer::run(std::atomic<bool>& stop)
     {
         lfd_=::socket(AF_INET,SOCK_STREAM,0);
         if(lfd_<0){ perror("socket"); return; }
@@ -32,16 +45,17 @@ namespace webserver
         a.sin_addr.s_addr=htonl(INADDR_ANY);
         a.sin_port=htons(port_);
         if(::bind(lfd_,(sockaddr*)&a,sizeof(a))<0){ perror("bind"); return; }
-        if(::listen(lfd_,16)<0){ perror("listen"); return; }
+        if(::listen(lfd_,backlog_)<0){ perror("listen"); return; }
         log("listening on 0.0.0.0:"+std::to_string(port_));
         FD_SET(lfd_,&master_);
         fdmax_=lfd_;
-        for(;;)
+        while(!stop.load())
         {
             fd_set readfds=master_;
-            if(::select(fdmax_+1,&readfds,nullptr,nullptr,nullptr)<0)
+            timeval tv{1,0};
+            if(::select(fdmax_+1,&readfds,nullptr,nullptr,&tv)<0)
             {
-                perror("select");
+                if(!stop.load()) perror("select");
                 break;
             }
             for(int fd=0;fd<=fdmax_;fd++)
@@ -84,9 +98,13 @@ namespace webserver
                 }
             }
         }
+        ::close(lfd_);
+        log("server stopped");
     }
+
     void WebSocketServer::cleanup_client(int fd)
     {
+        ::shutdown(fd,SHUT_RDWR);
         ::close(fd);
         FD_CLR(fd,&master_);
         handshaken_.erase(fd);
@@ -95,6 +113,7 @@ namespace webserver
         log("connection closed (fd="+std::to_string(fd)+")");
         if(on_close) on_close(fd);
     }
+
     bool WebSocketServer::perform_handshake(int fd)
     {
         std::string rbuf; rbuf.reserve(4096);
@@ -124,6 +143,7 @@ namespace webserver
         if(::send(fd,resp.data(),resp.size(),0)<0) return false;
         return true;
     }
+
     bool WebSocketServer::handle_frame(int fd)
     {
         uint8_t buf[4096];
@@ -136,6 +156,15 @@ namespace webserver
             log("protocol error parsing frame (fd="+std::to_string(fd)+")");
             auto out=build_close(1002,"protocol error");
             ::send(fd,out.data(),out.size(),0);
+            ::shutdown(fd,SHUT_WR);
+            return false;
+        }
+        if(f.payload.size()>size_t(max_payload_))
+        {
+            log("payload too large ("+std::to_string(f.payload.size())+" bytes) from fd "+std::to_string(fd));
+            auto out=build_close(1009,"message too big");
+            ::send(fd,out.data(),out.size(),0);
+            ::shutdown(fd,SHUT_WR);
             return false;
         }
         if(f.opcode==OP_TEXT)
@@ -206,6 +235,7 @@ namespace webserver
             log("close frame received (fd="+std::to_string(fd)+")");
             auto out=build_close(1000,"normal closure");
             ::send(fd,out.data(),out.size(),0);
+            ::shutdown(fd,SHUT_WR);
             return false;
         }
         else
@@ -213,6 +243,7 @@ namespace webserver
             log("unknown opcode "+std::to_string(int(f.opcode))+" from fd "+std::to_string(fd));
             auto out=build_close(1002,"protocol error");
             ::send(fd,out.data(),out.size(),0);
+            ::shutdown(fd,SHUT_WR);
             return false;
         }
         return true;

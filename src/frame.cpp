@@ -1,102 +1,140 @@
 #include "webserver/frame.hpp"
 #include <cstring>
+#include <arpa/inet.h>
+
 namespace webserver
 {
-    bool parse_frame(const uint8_t* buf, size_t n, Frame& out, size_t& used)
+    bool parse_frame(const uint8_t* data,size_t len,Frame& frame,size_t& used)
     {
-        if(n<2) return false;
-        uint8_t b0=buf[0];
-        uint8_t b1=buf[1];
-        out.fin=(b0 & 0x80)!=0;
-        out.opcode=(b0 & 0x0F);
-        bool masked=(b1 & 0x80)!=0;
-        uint64_t len=(b1 & 0x7F);
-        size_t pos=2;
-        if(len==126)
+        if(len<2) return false;
+        uint8_t b0=data[0];
+        uint8_t b1=data[1];
+        bool mask=(b1&0x80)!=0;
+        uint64_t plen=b1&0x7F;
+        size_t off=2;
+        if(plen==126)
         {
-            if(n<pos+2) return false;
-            len=(uint64_t(buf[pos])<<8)|buf[pos+1];
-            pos+=2;
+            if(len<4) return false;
+            uint16_t v; std::memcpy(&v,data+2,2);
+            plen=ntohs(v);
+            off=4;
         }
-        else if(len==127)
+        else if(plen==127)
         {
-            if(n<pos+8) return false;
-            len=0;
-            for(int i=0;i<8;i++) len=(len<<8)|buf[pos+i];
-            pos+=8;
+            if(len<10) return false;
+            uint64_t v; std::memcpy(&v,data+2,8);
+            plen=be64toh(v);
+            off=10;
         }
-        uint8_t mask[4];
-        if(masked)
+        uint8_t maskkey[4]{};
+        if(mask)
         {
-            if(n<pos+4) return false;
-            for(int i=0;i<4;i++) mask[i]=buf[pos+i];
-            pos+=4;
+            if(len<off+4) return false;
+            std::memcpy(maskkey,data+off,4);
+            off+=4;
         }
-        if(n<pos+len) return false;
-        out.payload.resize(len);
-        for(size_t i=0;i<len;i++)
+
+        // --- Oversize patch ---
+        if(plen>65536)   // >64KB → let server handle with 1009
         {
-            uint8_t c=buf[pos+i];
-            if(masked) c^=mask[i%4];
-            out.payload[i]=c;
+            frame.fin=(b0&0x80)!=0;
+            frame.opcode=b0&0x0F;
+            frame.payload.resize(plen,0);  // just reserve size
+            used=len; // consume buffer
+            return true;
         }
-        pos+=len;
-        used=pos;
+        // ----------------------
+
+        if(len<off+plen) return false;
+        frame.fin=(b0&0x80)!=0;
+        frame.opcode=b0&0x0F;
+        frame.payload.resize(plen);
+        if(mask)
+        {
+            for(size_t i=0;i<plen;i++)
+                frame.payload[i]=data[off+i]^maskkey[i%4];
+        }
+        else
+        {
+            std::memcpy(frame.payload.data(),data+off,plen);
+        }
+        used=off+plen;
         return true;
     }
+
     std::vector<uint8_t> build_frame(const Frame& f)
     {
         std::vector<uint8_t> out;
         uint8_t b0=(f.fin?0x80:0x00)|(f.opcode&0x0F);
         out.push_back(b0);
-        size_t len=f.payload.size();
-        if(len<126)
+        size_t plen=f.payload.size();
+        if(plen<=125)
         {
-            out.push_back(uint8_t(len));
+            out.push_back(uint8_t(plen));
         }
-        else if(len<=0xFFFF)
+        else if(plen<=0xFFFF)
         {
             out.push_back(126);
-            out.push_back((len>>8)&0xFF);
-            out.push_back(len&0xFF);
+            uint16_t v=htons(uint16_t(plen));
+            uint8_t* p=(uint8_t*)&v;
+            out.insert(out.end(),p,p+2);
         }
         else
         {
             out.push_back(127);
-            for(int i=7;i>=0;i--)
-                out.push_back((len>>(i*8))&0xFF);
+            uint64_t v=htobe64(plen);
+            uint8_t* p=(uint8_t*)&v;
+            out.insert(out.end(),p,p+8);
         }
-
-        out.insert(out.end(), f.payload.begin(), f.payload.end());
+        out.insert(out.end(),f.payload.begin(),f.payload.end());
         return out;
     }
-    std::vector<uint8_t> build_pong(const Frame& ping)
-    {
-        Frame f{true,OP_PONG,ping.payload};
-        return build_frame(f);
-    }
-    std::vector<uint8_t> build_close(uint16_t code,const std::string& reason)
-    {
-        std::vector<uint8_t> payload;
-        payload.push_back((code>>8)&0xFF);
-        payload.push_back(code&0xFF);
-        payload.insert(payload.end(),reason.begin(),reason.end());
-        Frame f{true,OP_CLOSE,payload};
-        return build_frame(f);
-    }
+
     std::vector<uint8_t> build_text(const std::string& msg,bool fin)
     {
-        Frame f{fin,OP_TEXT,std::vector<uint8_t>(msg.begin(),msg.end())};
+        Frame f;
+        f.fin=fin;
+        f.opcode=OP_TEXT;
+        f.payload.assign(msg.begin(),msg.end());
         return build_frame(f);
     }
+
     std::vector<uint8_t> build_binary(const std::vector<uint8_t>& data,bool fin)
     {
-        Frame f{fin,OP_BINARY,data};
+        Frame f;
+        f.fin=fin;
+        f.opcode=OP_BINARY;
+        f.payload=data;
         return build_frame(f);
     }
+
     std::vector<uint8_t> build_continuation(const std::vector<uint8_t>& data,bool fin)
     {
-        Frame f{fin,OP_CONT,data};
+        Frame f;
+        f.fin=fin;
+        f.opcode=OP_CONT;
+        f.payload=data;
+        return build_frame(f);
+    }
+
+    std::vector<uint8_t> build_close(uint16_t code,const std::string& reason)
+    {
+        Frame f;
+        f.fin=true;
+        f.opcode=OP_CLOSE;
+        f.payload.resize(2+reason.size());
+        uint16_t v=htons(code);
+        std::memcpy(f.payload.data(),&v,2);
+        std::memcpy(f.payload.data()+2,reason.data(),reason.size());
+        return build_frame(f);
+    }
+
+    std::vector<uint8_t> build_pong(const Frame& ping)
+    {
+        Frame f;
+        f.fin=true;
+        f.opcode=OP_PONG;
+        f.payload=ping.payload;
         return build_frame(f);
     }
 }

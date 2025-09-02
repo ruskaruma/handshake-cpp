@@ -1,11 +1,15 @@
 #include "webserver/server.hpp"
 #include "webserver/log.hpp"
 #include <cstdlib>
+#include <atomic>
+
 int main(int argc,char** argv)
 {
     int port=8080;
     if(argc>=2) port=std::atoi(argv[1]);
+
     webserver::WebSocketServer server(port);
+
     server.on_open=[](int fd)
     {
         webserver::log("connection opened (fd="+std::to_string(fd)+")");
@@ -26,6 +30,9 @@ int main(int argc,char** argv)
             webserver::log("fd "+std::to_string(fd)+" -> binary message ("+std::to_string(data.size())+" bytes)");
         }
     };
-    server.run();
+
+    std::atomic<bool> stop_flag{false};   // ✅ atomic flag
+    server.run(stop_flag);
+
     return 0;
 }
