@@ -59,10 +59,48 @@ target_link_libraries(your_target handshake-cpp::handshake-cpp)
 ```
 
 ## Project Structure
-- `include/` → Public headers
-- `src/` → Core implementation  
-- `tests/` → Unit tests (GoogleTest)
-- `examples/` → Example echo client and server
+```bash
+        handshake-cpp/
+        ├── CMakeLists.txt
+        ├── LICENSE
+        ├── README.md
+        ├── .gitignore
+        │
+        ├── cmake/
+        │   └── handshake-cpp-config.cmake.in
+        │
+        ├── include/
+        │   └── webserver/
+        │       ├── base64.hpp
+        │       ├── frame.hpp
+        │       ├── handshake.hpp
+        │       ├── http.hpp
+        │       ├── log.hpp
+        │       ├── server.hpp
+        │       ├── sha1.hpp
+        │       └── webclient.hpp
+        │
+        ├── src/
+        │   ├── client.cpp
+        │   ├── frame.cpp
+        │   ├── handshake.cpp
+        │   ├── log.cpp
+        │   ├── server.cpp
+        │   ├── server_impl.cpp
+        │   └── webclient.cpp
+        │
+        ├── tests/
+        │   ├── test_base64_sha1.cpp
+        │   ├── test_frame.cpp
+        │   ├── test_handshake.cpp
+        │   └── test_oversize_payload.cpp
+        │
+        ├── examples/
+        │   └── echo_client.cpp
+        │
+        └── build/
+
+```
 
 ## License
 This project is licensed under the **MIT License**.
