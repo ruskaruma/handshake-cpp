@@ -1,0 +1,10 @@
+@PACKAGE_INIT@
+
+# Load the exported targets for this package
+include("${CMAKE_CURRENT_LIST_DIR}/handshake-cpp-targets.cmake")
+
+# Make sure consumers get include paths
+set(handshake-cpp_INCLUDE_DIRS "${PACKAGE_PREFIX_DIR}/include")
+
+# Backward compatibility variables (optional)
+set(handshake-cpp_LIBRARIES handshake-cpp::handshake-cpp)

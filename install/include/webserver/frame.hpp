@@ -2,23 +2,24 @@
 #include<cstdint>
 #include<vector>
 #include<string>
+
 namespace webserver
 {
     enum Opcode : uint8_t
     {
-        OP_CONT=0x0,
-        OP_TEXT=0x1,
-        OP_BINARY=0x2,
-        OP_CLOSE=0x8,
-        OP_PING=0x9,
-        OP_PONG=0xA
+        OP_CONT   = 0x0,
+        OP_TEXT   = 0x1,
+        OP_BINARY = 0x2,
+        OP_CLOSE  = 0x8,
+        OP_PING   = 0x9,
+        OP_PONG   = 0xA
     };
     struct Frame
     {
-        bool fin=true;
-        uint8_t opcode=0;
+        bool fin = true;
+        uint8_t opcode = 0;
         std::vector<uint8_t> payload;
-        bool mask=false;
+        bool mask = false;
         uint32_t masking_key = 0;
     };
     bool parse_frame(const uint8_t* data, size_t len, Frame& out, size_t& used);
